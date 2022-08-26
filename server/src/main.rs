@@ -63,27 +63,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/login",
             get(auth::login::get_login).post(auth::login::post_login),
         )
-        .route(
-            "/logout",
-            get(auth::logout::get_logout),
-        )
-        .route(
-            "/account",
-            get(auth::account::get_account),
-        )
+        .route("/logout", get(auth::logout::get_logout))
+        .route("/account", get(auth::account::get_account))
         .route(
             "/account/username",
             post(auth::account::post_change_username),
         )
-        .route(
-            "/account/email",
-            post(auth::account::post_change_email),
-        )
+        .route("/account/email", post(auth::account::post_change_email))
         .route(
             "/account/password",
             post(auth::account::post_change_password),
         )
-        
         .layer(Extension(game_state))
         .layer(Extension(pool.clone()))
         .layer(session_layer)

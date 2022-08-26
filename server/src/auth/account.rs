@@ -11,7 +11,7 @@ use serde::Deserialize;
 use sqlx::SqlitePool;
 use validator::{Validate, ValidationErrors};
 
-use super::{ToTemplate, ValidatedForm, form_error};
+use super::{form_error, ToTemplate, ValidatedForm};
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct ChangeUsernameForm {
@@ -48,7 +48,6 @@ pub struct Account {
     #[validate(must_match(other = "password", message = "The passwords must match"))]
     password_repeat: String,
 }
-
 
 impl ToTemplate for ChangeUsernameForm {
     fn to_template(self, errors: ValidationErrors) -> Box<dyn DynTemplate> {
@@ -124,7 +123,6 @@ pub struct AccountTemplate {
     password_repeat_error: Vec<String>,
 }
 
-
 pub async fn get_account(
     Extension(session): Extension<Session>,
     Extension(pool): Extension<SqlitePool>,
@@ -146,7 +144,8 @@ pub async fn get_account(
             username,
             email,
             ..AccountTemplate::default()
-        }.into_response())
+        }
+        .into_response())
     } else {
         Ok(Redirect::to("/login").into_response())
     }
@@ -172,10 +171,12 @@ pub async fn post_change_username(
     .await;
 
     match result {
-        Err(_) => {
-            Ok(form_error(change_username, "unique", "This username is already taken"))
-        },
-        Ok(_) => Ok(Redirect::to("/account").into_response())
+        Err(_) => Ok(form_error(
+            change_username,
+            "unique",
+            "This username is already taken",
+        )),
+        Ok(_) => Ok(Redirect::to("/account").into_response()),
     }
 }
 

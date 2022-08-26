@@ -1,8 +1,5 @@
 use crate::ServerError;
-use axum::{
-    response::Redirect,
-    Extension,
-};
+use axum::{response::Redirect, Extension};
 use axum_sessions::async_session::Session;
 use sqlx::SqlitePool;
 

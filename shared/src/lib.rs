@@ -7,7 +7,6 @@ const TICKS_PER_MINUTE: u32 = 60;
 #[cfg(debug_assertions)]
 const TICKS_PER_MINUTE: u32 = 1;
 
-
 pub type UserId = i64;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -198,18 +197,25 @@ impl Player {
         }
     }
 
-    pub fn remove_from_inventory<F: Fn(&ItemType) -> f64>(
-        &mut self,
-        items: &[(ItemType, u32)],
-    ) -> bool {
-        let all_available = items
-            .iter()
-            .all(|(item, qty)| self.inventory.get(item).cloned().unwrap_or_default() >= *qty);
+    pub fn is_available_for_crafting(&self, item_type: ItemType, qty: u32) -> bool {
+        if let Some(items) = item_type.crafting_requirements() {
+            items
+                .iter()
+                .all(|(item, available_qty)| self.inventory.get(item).cloned().unwrap_or_default() * qty >= *available_qty)
+        } else {
+            false
+        }
+    }
+
+    pub fn craft(&mut self, item_type: ItemType, qty: u32) -> bool {
+        let all_available = self.is_available_for_crafting(item_type, qty);
 
         if all_available {
-            for (item, qty) in items {
-                *self.inventory.entry(*item).or_default() -= qty;
+            for (item, qty2) in item_type.crafting_requirements().unwrap() {
+                *self.inventory.entry(*item).or_default() -= qty * qty2;
             }
+
+            *self.inventory.entry(item_type).or_default() += qty;
         }
 
         all_available
@@ -247,16 +253,16 @@ impl Entity {
 pub enum EntityType {
     Person(Person),
     Building(Building),
-    Npc(Npc)
+    Npc(Npc),
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Person {
     pub first_name: String,
     pub last_name: String,
-    pub health: u32,
-    pub rest: u32,
-    pub hunger: u32,
+    pub health: i32,
+    pub rest: i32,
+    pub hunger: i32,
     pub tasks: VecDeque<Task>,
     //pub inventory: HashMap<ItemType, u32>,
     pub owner: UserId,
@@ -334,6 +340,7 @@ pub enum ItemType {
     Gold,
     Crystal,
     Flower,
+    Dagger,
 }
 
 impl std::fmt::Display for ItemType {
@@ -355,6 +362,7 @@ impl std::fmt::Display for ItemType {
                 ItemType::Gold => "Gold",
                 ItemType::Flower => "Flower",
                 ItemType::Crystal => "Crystal",
+                ItemType::Dagger => "Dagger",
             }
         )
     }
@@ -376,22 +384,30 @@ impl ItemType {
             ItemType::Gold,
             ItemType::Crystal,
             ItemType::Flower,
+            ItemType::Dagger,
         ]
+    }
+
+    pub fn crafting_requirements(&self) -> Option<&[(ItemType, u32)]> {
+        match self {
+            ItemType::Dagger => Some(&[(ItemType::Iron, 10)]),
+            _ => None,
+        }
     }
 
     pub fn offense(&self) -> u32 {
         match self {
-            _ => 0
+            ItemType::Dagger => 5,
+            _ => 0,
         }
     }
 
     pub fn defense(&self) -> u32 {
         match self {
-            _ => 0
+            _ => 0,
         }
     }
 }
-
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum ItemCategory {
@@ -545,7 +561,7 @@ impl State {
         if let Some(entity) = self.entities.get(entity_id) {
             if let EntityType::Person(person) = &entity.entity_type {
                 println!("checking next task: {:?}", task_type);
-                
+
                 if let Some(next_task) = person.tasks.front() {
                     if let TaskType::Walking(_) = next_task.task_type {
                         if let TaskType::Walking(_) = task_type {
@@ -572,8 +588,7 @@ impl State {
                         }
 
                         let (dx, dy) = direction.delta();
-                        if let Some(next_tile) = self.map.get_tile(x + dx, y + dy)
-                        {
+                        if let Some(next_tile) = self.map.get_tile(x + dx, y + dy) {
                             match next_tile.tile_type {
                                 TileType::Water => false,
                                 _ => true,
@@ -630,10 +645,8 @@ impl State {
                         } else {
                             false
                         }
-                    },
-                    TaskType::FightPerson(_) => {
-                        true
                     }
+                    TaskType::FightPerson(_) => true,
                 };
             }
         }
@@ -679,7 +692,7 @@ impl State {
                         username,
                         money: 0,
                         karma: 0,
-                        inventory: HashMap::new()
+                        inventory: HashMap::new(),
                     },
                 );
             }
@@ -700,8 +713,28 @@ impl State {
                         EntityType::Person(person) => {
                             let owner = person.owner;
 
-                            let task_done = if let Some(Task { remaining_time, .. }) =
-                                self.entities.get_mut(&entity_id).unwrap().get_as_person_mut().tasks.front_mut()
+                            let person = self
+                                .entities
+                                .get_mut(&entity_id)
+                                .unwrap()
+                                .get_as_person_mut();
+
+                            person.rest = (person.rest - 11).max(0).min(1_000_000);
+                            person.hunger = (person.hunger - 11).max(0).min(1_000_000);
+
+                            if person.rest > 0 {
+                                if person.health < 1_000_000 {
+                                    person.health = (person.health + 11).max(0).min(1_000_000);
+                                }
+                            }
+
+                            let task_done = if let Some(Task { remaining_time, .. }) = self
+                                .entities
+                                .get_mut(&entity_id)
+                                .unwrap()
+                                .get_as_person_mut()
+                                .tasks
+                                .front_mut()
                             {
                                 if *remaining_time == 0 {
                                     true
@@ -714,7 +747,14 @@ impl State {
                             };
 
                             if task_done {
-                                let Task { task_type, .. } = self.entities.get_mut(&entity_id).unwrap().get_as_person_mut().tasks.pop_front().unwrap();
+                                let Task { task_type, .. } = self
+                                    .entities
+                                    .get_mut(&entity_id)
+                                    .unwrap()
+                                    .get_as_person_mut()
+                                    .tasks
+                                    .pop_front()
+                                    .unwrap();
                                 match task_type {
                                     TaskType::Walking(direction) => {
                                         let entity = self.entities.get_mut(&entity_id).unwrap();
@@ -739,8 +779,10 @@ impl State {
                                         println!("{:?} {:?}", entity_id, self.entities);
                                         let entity = self.entities.get(&entity_id).unwrap();
 
-                                        self.players.get_mut(&owner).unwrap().add_to_inventory(&mut rng, 1..=3, |item_type| {
-                                            match self
+                                        self.players.get_mut(&owner).unwrap().add_to_inventory(
+                                            &mut rng,
+                                            1..=3,
+                                            |item_type| match self
                                                 .map
                                                 .get_tile(entity.x, entity.y)
                                                 .unwrap()
@@ -765,36 +807,42 @@ impl State {
                                                     _ => 0.0,
                                                 },
                                                 _ => 0.0,
-                                            }
-                                        });
+                                            },
+                                        );
                                     }
                                     TaskType::Woodcutting => {
-                                        self.players.get_mut(&owner).unwrap().add_to_inventory(&mut rng, 1..=3, |item_type| {
-                                            match item_type {
+                                        self.players.get_mut(&owner).unwrap().add_to_inventory(
+                                            &mut rng,
+                                            1..=3,
+                                            |item_type| match item_type {
                                                 ItemType::Wood => 20.0,
                                                 ItemType::Apple => 5.0,
                                                 _ => 0.0,
-                                            }
-                                        });
+                                            },
+                                        );
                                     }
                                     TaskType::Mining => {
-                                        self.players.get_mut(&owner).unwrap().add_to_inventory(&mut rng, 1..=3, |item_type| {
-                                            match item_type {
+                                        self.players.get_mut(&owner).unwrap().add_to_inventory(
+                                            &mut rng,
+                                            1..=3,
+                                            |item_type| match item_type {
                                                 ItemType::Coal => 20.0,
                                                 ItemType::Iron => 5.0,
                                                 ItemType::Gold => 5.0,
                                                 _ => 0.0,
-                                            }
-                                        });
+                                            },
+                                        );
                                     }
                                     TaskType::Fishing => {
-                                        self.players.get_mut(&owner).unwrap().add_to_inventory(&mut rng, 1..=3, |item_type| {
-                                            match item_type {
+                                        self.players.get_mut(&owner).unwrap().add_to_inventory(
+                                            &mut rng,
+                                            1..=3,
+                                            |item_type| match item_type {
                                                 ItemType::Fish => 5.0,
                                                 ItemType::Crab => 1.0,
                                                 _ => 0.0,
-                                            }
-                                        });
+                                            },
+                                        );
                                     }
                                     TaskType::Building(building_type) => {
                                         let entity = self.entities.get(&entity_id).unwrap();
@@ -808,7 +856,7 @@ impl State {
                                                 building_type,
                                             }),
                                         });
-                                    },
+                                    }
                                     TaskType::FightPerson(opponent_id) => {
                                         if entity_id < opponent_id {
                                             let entity = self.entities.get(&entity_id).unwrap();
@@ -817,12 +865,11 @@ impl State {
                                     }
                                 }
 
-                                
                                 //self.remove_tasks(&entity_id);
                             }
                         }
                         EntityType::Building(building) => {
-                            /* 
+                            /*
                             let remove_building =
                                 if let Some(remaining_time) = &mut building.remaining_time {
                                     if *remaining_time == 0 {
@@ -882,7 +929,6 @@ impl State {
                                 task_type,
                             });
                         }
-                        
                     }
                 }
             }
@@ -892,27 +938,30 @@ impl State {
                         person.tasks.pop_back();
                     }
                 }
-            },
+            }
             Event::ChallengeToFight(challenger_entity_id, challenged_entity_id) => {
-                let accept_challenge = vec![challenged_entity_id, challenged_entity_id].iter().all(|entity_id| {
-                    if let Some(entity) = self.entities.get(&entity_id) {
-                        match &entity.entity_type {
-                            EntityType::Person(person) => {
-                                if let Some(task) = person.tasks.front() {
-                                    match task.task_type {
-                                        TaskType::FightPerson(_) => false,
-                                        _ => true
+                let accept_challenge =
+                    vec![challenged_entity_id, challenged_entity_id]
+                        .iter()
+                        .all(|entity_id| {
+                            if let Some(entity) = self.entities.get(&entity_id) {
+                                match &entity.entity_type {
+                                    EntityType::Person(person) => {
+                                        if let Some(task) = person.tasks.front() {
+                                            match task.task_type {
+                                                TaskType::FightPerson(_) => false,
+                                                _ => true,
+                                            }
+                                        } else {
+                                            true
+                                        }
                                     }
-                                } else {
-                                    true
+                                    _ => false,
                                 }
-                            },
-                            _ => false,
-                        }
-                    } else {
-                        false
-                    }
-                });
+                            } else {
+                                false
+                            }
+                        });
 
                 if accept_challenge {
                     if let Some(entity) = self.entities.get_mut(&challenger_entity_id) {
@@ -926,7 +975,6 @@ impl State {
                     }
                     if let Some(entity) = self.entities.get_mut(&challenged_entity_id) {
                         if let EntityType::Person(person) = &mut entity.entity_type {
-
                             let task_type = TaskType::FightPerson(challenger_entity_id);
                             person.tasks.push_front(Task {
                                 remaining_time: task_type.duration(),
@@ -934,6 +982,13 @@ impl State {
                             });
                         }
                     }
+                }
+            }
+            Event::CraftItem(item_type, qty) => {
+                if let Some(requirements) = item_type.crafting_requirements() {
+                    let player = &mut self.players.get_mut(&user_id.unwrap()).unwrap();
+
+                    player.craft(item_type, qty);   
                 }
             }
         }
@@ -957,6 +1012,7 @@ pub enum Event {
     PushTask(EntityId, TaskType),
     PopTask(EntityId),
     ChallengeToFight(EntityId, EntityId),
+    CraftItem(ItemType, u32),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
